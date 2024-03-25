@@ -120,5 +120,5 @@ int isClusterSlotsResponseCached(enum connTypeForCaching conn_type);
 sds getClusterSlotReply(enum connTypeForCaching conn_type);
 void clearCachedClusterSlotsResp(void);
 void cacheSlotsResponse(sds response_to_cache, enum connTypeForCaching conn_type);
-void checkNodesStateChange(void);
+void updateNodesHealth(void);
 #endif /* __CLUSTER_H */

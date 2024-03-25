@@ -913,6 +913,7 @@ void clusterUpdateMyselfIp(void) {
         } else {
             myself->ip[0] = '\0'; /* Force autodetection. */
         }
+        clearCachedClusterSlotsResp();
     }
 }
 
@@ -5648,6 +5649,14 @@ void clusterUpdateSlots(client *c, unsigned char *slots, int del) {
     }
 }
 
+long long getNodeOffSet(clusterNode *node) {
+    if (node->flags & CLUSTER_NODE_MYSELF) {
+        return nodeIsSlave(node) ? replicationGetSlaveOffset() : server.master_repl_offset;
+    } else {
+        return node->repl_offset;
+    }
+}
+
 /* Add detailed information of a node to the output buffer of the given client. */
 void addNodeDetailsToShardReply(client *c, clusterNode *node) {
     int reply_count = 0;
@@ -5682,12 +5691,7 @@ void addNodeDetailsToShardReply(client *c, clusterNode *node) {
         reply_count++;
     }
 
-    long long node_offset;
-    if (node->flags & CLUSTER_NODE_MYSELF) {
-        node_offset = nodeIsSlave(node) ? replicationGetSlaveOffset() : server.master_repl_offset;
-    } else {
-        node_offset = node->repl_offset;
-    }
+    long long node_offset = getNodeOffSet(node);
 
     addReplyBulkCString(c, "role");
     addReplyBulkCString(c, nodeIsSlave(node) ? "replica" : "master");
@@ -6563,42 +6567,30 @@ void clusterPromoteSelfToMaster(void) {
     replicationUnsetMaster();
 }
 
-void handleNodeHealthChangeForShard(list *nodes) {
-    serverAssert(listLength(nodes) > 0);
-    listIter li;
+void updateNodesHealth(void) {
+    dictIterator *di;
+    dictEntry *de;
     clusterNode *node;
-    int overall_health = 0;
-    listRewind(nodes, &li);
-    for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {
-        int present_node_heath;
-        node = listNodeValue(ln);
+    int overall_health_changed = 0;
+    di = dictGetSafeIterator(server.cluster->nodes);
+    while((de = dictNext(di)) != NULL) {
+        node = dictGetVal(de);
+        int present_node_health;
 
-        long long node_offset;
-        if (node->flags & CLUSTER_NODE_MYSELF) {
-            node_offset = nodeIsSlave(node) ? replicationGetSlaveOffset() : server.master_repl_offset;
-        } else {
-            node_offset = node->repl_offset;
-        }
+        long long node_offset = getNodeOffSet(node);
 
         if (nodeFailed(node) || (nodeIsSlave(node) && node_offset == 0)) {
-            present_node_heath = 0;
+            present_node_health = 0;
         } else {
-            present_node_heath = 1;
+            present_node_health = 1;
         }
 
-        if (present_node_heath != node->node_health) {
-            overall_health = 1;
+        if (present_node_health != node->node_health) {
+            overall_health_changed = 1;
         }
-        node->node_health = present_node_heath;
-    }
-
-    if (overall_health) clearCachedClusterSlotsResp();
-}
-
-void checkNodesStateChange(void) {
-    dictIterator *di = dictGetSafeIterator(server.cluster->shards);
-    for(dictEntry *de = dictNext(di); de != NULL; de = dictNext(di)) {
-        handleNodeHealthChangeForShard(dictGetVal(de));
+        node->node_health = present_node_health;
     }
     dictReleaseIterator(di);
+
+    if (overall_health_changed) clearCachedClusterSlotsResp();
 }

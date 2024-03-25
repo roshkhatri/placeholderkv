@@ -1403,7 +1403,7 @@ void addNodeReplyForClusterSlot(client *c, clusterNode *node, int start_slot, in
 }
 
 sds generateClusterSlotResponse(void) {
-    client *recording_client = initCaching();
+    client *recording_client = createCachedResponseClient();
     clusterNode *n = NULL;
     int num_masters = 0, start = -1;
     void *slot_replylen = addReplyDeferredLen(recording_client);
@@ -1428,20 +1428,15 @@ sds generateClusterSlotResponse(void) {
         }
     }
     setDeferredArrayLen(recording_client, slot_replylen, num_masters);
-    sds response = stopCaching(recording_client);
-    freeClient(recording_client);
-    return response;
+    return stopCaching(recording_client);
 }
 
 int verifyCachedClusterSlotsResponse(sds cached_response) {
     sds generated_response = generateClusterSlotResponse();
-    if (sdscmp(generated_response, cached_response) == 0) {
-        sdsfree(generated_response);
-        return 1;
-    }
-    serverLog(LL_NOTICE,"\ngenerated_response:\n%s\n\ncached_response:\n%s", generated_response, cached_response);
+    int result = !sdscmp(generated_response, cached_response);
+    if (!result) serverLog(LL_NOTICE,"\ngenerated_response:\n%s\n\ncached_response:\n%s", generated_response, cached_response);
     sdsfree(generated_response);
-    return 0;
+    return result;
 }
 
 void clusterCommandSlots(client * c) {
@@ -1458,15 +1453,15 @@ void clusterCommandSlots(client * c) {
     enum connTypeForCaching conn_type = connIsTLS(c->conn);
 
     /* Check if we have a response cached for cluster slots for early exit. */
-    checkNodesStateChange();    
+    updateNodesHealth();    
     if (isClusterSlotsResponseCached(conn_type)) {
         debugServerAssertWithInfo(c, NULL, verifyCachedClusterSlotsResponse(getClusterSlotReply(conn_type)) == 1);
-        addReplySds(c, sdsdup(getClusterSlotReply(conn_type)));
+        addReplyProto(c, getClusterSlotReply(conn_type), sdslen(getClusterSlotReply(conn_type)));
         return;
     }
 
     cacheSlotsResponse(generateClusterSlotResponse(), conn_type);
-    addReplySds(c, sdsdup(getClusterSlotReply(conn_type)));
+    addReplyProto(c, getClusterSlotReply(conn_type), sdslen(getClusterSlotReply(conn_type)));
 }
 
 /* -----------------------------------------------------------------------------
