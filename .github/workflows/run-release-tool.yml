@@ -1,0 +1,94 @@
+name: Release Source Code
+
+on:
+  push:
+    tags:
+      - '*'
+  
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of Valkey to release
+        required: true
+
+jobs:
+    get-tag:
+        name: Get metadata to build
+        runs-on: ubuntu-latest
+        outputs:
+          TAG: ${{ steps.get_tag.outputs.TAG }}
+        steps:
+    
+          - run: |
+              echo "TAG: ${{ inputs.tag || github.ref_name }}"
+            shell: bash
+    
+          # This step is to consolidate the three different triggers into a single "TAG"
+          # 1. If manual dispatch - use the tag provided.
+          # 3. If tag trigger, use that tag.
+          - name: Get the Tag
+            id: get_tag
+            run: |
+                TAG="${INPUT_TAG}"
+                if [ -z "${TAG}" ]; then
+                    false
+                fi
+                echo "TAG=$TAG" >> $GITHUB_OUTPUT
+            shell: bash
+            env:
+              # Use the dispatch variable in preference, if empty use the context ref_name which should
+              # only ever be a tag
+              INPUT_TAG: ${{ inputs.tag || github.ref_name }}
+
+
+    create-source-code-tarball:
+        runs-on: 'ubuntu-latest'
+        needs: get-tag
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+              with:
+                ref: ${{ needs.get-tag.outputs.TAG }}
+            
+            # - name: Create Tarball and sha256
+            #   run: |
+            #     TAG=${{needs.get-tag.outputs.TAG}}
+            #     TARNAME="valkey-${TAG}.tar"
+            #     echo "Generating /tmp/${TARNAME}"
+            #     git archive $TAG --prefix valkey-${TAG}/ > /tmp/$TARNAME || exit 1
+            #     echo "Gizipping the archive"
+            #     rm -f /tmp/$TARNAME.gz
+            #     gzip -9 /tmp/$TARNAME
+            #     sha256sum /tmp/$TARNAME.gz > /tmp/$TARNAME.gz.sha256
+            #     mkdir -p packages-files
+            #     cp -rfv /tmp/$TARNAME* packages-files/
+            #     cp -rfv packages-files/$TARNAME.gz packages-files/valkey_stable.tar.gz 
+            #     sha256sum packages-files/valkey_stable.tar.gz > packages-files/valkey_stable.tar.gz.sha256
+            
+            # - name: Configure AWS credentials
+            #   run: |
+            #     aws configure set region us-east-1
+            #     aws configure set aws_access_key_id ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
+            #     aws configure set aws_secret_access_key ${{ secrets.AWS_S3_ACCESS_KEY }}
+            
+            # - name: Sync to S3
+            #   run: aws s3 sync packages-files s3://${{secrets.AWS_S3_BUCKET}}/releases/ 
+            
+            # - name: Release hash
+            #   uses: passeidireto/trigger-external-workflow-action@main
+            #   env:
+            #     PAYLOAD_TAG: ${{needs.get-tag.outputs.TAG}}
+            #   with:
+            #     repository: roshkhatri/valkey-hashes
+            #     event: release_hash
+            #     github_pat: ${{ secrets.WORKFLOW_PAT }}    
+            
+                    # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+            - name: Test
+              run: |
+                curl -X POST https://api.github.com/repos/roshkhatri/valkey-hashes/dispatches \
+                -H 'Accept: application/vnd.github.everest-preview+json' \
+                -u ${{ secrets.WORKFLOW_PAT }} \
+                --data '{"event_type": "release_hash", "client_payload": { "tag": "${{needs.get-tag.outputs.TAG}}" }}'
+            - uses: actions/checkout@v3
+
