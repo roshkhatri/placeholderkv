@@ -50,45 +50,38 @@ jobs:
               with:
                 ref: ${{ needs.get-tag.outputs.TAG }}
             
-            # - name: Create Tarball and sha256
-            #   run: |
-            #     TAG=${{needs.get-tag.outputs.TAG}}
-            #     TARNAME="valkey-${TAG}.tar"
-            #     echo "Generating /tmp/${TARNAME}"
-            #     git archive $TAG --prefix valkey-${TAG}/ > /tmp/$TARNAME || exit 1
-            #     echo "Gizipping the archive"
-            #     rm -f /tmp/$TARNAME.gz
-            #     gzip -9 /tmp/$TARNAME
-            #     sha256sum /tmp/$TARNAME.gz > /tmp/$TARNAME.gz.sha256
-            #     mkdir -p packages-files
-            #     cp -rfv /tmp/$TARNAME* packages-files/
-            #     cp -rfv packages-files/$TARNAME.gz packages-files/valkey_stable.tar.gz 
-            #     sha256sum packages-files/valkey_stable.tar.gz > packages-files/valkey_stable.tar.gz.sha256
-            
-            # - name: Configure AWS credentials
-            #   run: |
-            #     aws configure set region us-east-1
-            #     aws configure set aws_access_key_id ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
-            #     aws configure set aws_secret_access_key ${{ secrets.AWS_S3_ACCESS_KEY }}
-            
-            # - name: Sync to S3
-            #   run: aws s3 sync packages-files s3://${{secrets.AWS_S3_BUCKET}}/releases/ 
-            
-            # - name: Release hash
-            #   uses: passeidireto/trigger-external-workflow-action@main
-            #   env:
-            #     PAYLOAD_TAG: ${{needs.get-tag.outputs.TAG}}
-            #   with:
-            #     repository: roshkhatri/valkey-hashes
-            #     event: release_hash
-            #     github_pat: ${{ secrets.WORKFLOW_PAT }}    
-            
-                    # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-            - name: Test
+            - name: Create Tarball and sha256
               run: |
-                curl -X POST https://api.github.com/repos/roshkhatri/valkey-hashes/dispatches \
-                -H 'Accept: application/vnd.github.everest-preview+json' \
-                -u ${{ secrets.WORKFLOW_PAT }} \
-                --data '{"event_type": "release_hash", "client_payload": { "tag": "${{needs.get-tag.outputs.TAG}}" }}'
-            - uses: actions/checkout@v3
-
+                TAG=${{needs.get-tag.outputs.TAG}}
+                TARNAME="valkey-${TAG}.tar"
+                echo "Generating /tmp/${TARNAME}"
+                git archive $TAG --prefix valkey-${TAG}/ > /tmp/$TARNAME || exit 1
+                echo "Gizipping the archive"
+                rm -f /tmp/$TARNAME.gz
+                gzip -9 /tmp/$TARNAME
+                sha256sum /tmp/$TARNAME.gz > /tmp/$TARNAME.gz.sha256
+                SHA=$(/tmp/$TARNAME.gz | shasum -a 256 | cut -f 1 -d' ')
+                echo "ENTRY="hash ${TARNAME}.gz sha256 $SHA https://github.com/valkey-io/valkey/archive/refs/tags/${TAG}.tar.gz"" >> $GITHUB_ENV
+                mkdir -p packages-files
+                cp -rfv /tmp/$TARNAME* packages-files/
+                cp -rfv packages-files/$TARNAME.gz packages-files/valkey_stable.tar.gz 
+                sha256sum packages-files/valkey_stable.tar.gz > packages-files/valkey_stable.tar.gz.sha256
+            
+            - name: Configure AWS credentials
+              run: |
+                aws configure set region us-east-1
+                aws configure set aws_access_key_id ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
+                aws configure set aws_secret_access_key ${{ secrets.AWS_S3_ACCESS_KEY }}
+            
+            - name: Sync to S3
+              run: aws s3 sync packages-files s3://${{secrets.AWS_S3_BUCKET}}/releases/  
+            
+            - name: Trigger Release hash Workflow on `valkey-hashes`
+              run: |
+                curl -L \
+                -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${{ secrets.WORKFLOW_PAT }}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                https://api.github.com/repos/roshkhatri/valkey-hashes/dispatches \
+                -d '{"event_type": "release_hash", "client_payload": { "tag": "$ENTRY" }}'
