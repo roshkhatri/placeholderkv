@@ -87,7 +87,8 @@ typedef struct clusterNodeFailReport {
 #define CLUSTERMSG_TYPE_MFSTART 8       /* Pause clients for manual failover */
 #define CLUSTERMSG_TYPE_MODULE 9        /* Module cluster API message. */
 #define CLUSTERMSG_TYPE_PUBLISHSHARD 10 /* Pub/Sub Publish shard propagation */
-#define CLUSTERMSG_TYPE_COUNT 11        /* Total number of message types. */
+#define CLUSTERMSG_TYPE_MPUBLISH 11        /* Pub/Sub Multiple Publish propagation. */
+#define CLUSTERMSG_TYPE_COUNT 12        /* Total number of message types. */
 
 /* Initially we don't know our "name", but we'll find it once we connect
  * to the first node, using the getsockname() function. Then we'll use this

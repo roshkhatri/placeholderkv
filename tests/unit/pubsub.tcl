@@ -66,6 +66,23 @@ start_server {tags {"pubsub network"}} {
         $rd1 close
     }
 
+    test "MPUBLISH basics" {
+        set rd1 [valkey_deferring_client]
+
+        # subscribe to one channels
+        assert_equal {1} [subscribe $rd1 {chan1}]
+        assert_equal 1 [r mpublish chan1 hello world]
+        assert_equal {message chan1 hello} [$rd1 read]
+        assert_equal {message chan1 world} [$rd1 read]
+        
+        # unsubscribe from one of the channels
+        unsubscribe $rd1 {chan1}
+        assert_equal 0 [r mpublish chan1 hello]
+
+        # clean up clients
+        $rd1 close
+    }
+
     test "PUBLISH/SUBSCRIBE with two clients" {
         set rd1 [valkey_deferring_client]
         set rd2 [valkey_deferring_client]

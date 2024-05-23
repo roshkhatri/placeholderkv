@@ -2763,7 +2763,7 @@ int clusterProcessPacket(clusterLink *link) {
     } else if (type == CLUSTERMSG_TYPE_FAIL) {
         explen = sizeof(clusterMsg)-sizeof(union clusterMsgData);
         explen += sizeof(clusterMsgDataFail);
-    } else if (type == CLUSTERMSG_TYPE_PUBLISH || type == CLUSTERMSG_TYPE_PUBLISHSHARD) {
+    } else if (type == CLUSTERMSG_TYPE_PUBLISH || type == CLUSTERMSG_TYPE_PUBLISHSHARD || type == CLUSTERMSG_TYPE_MPUBLISH ) {
         explen = sizeof(clusterMsg)-sizeof(union clusterMsgData);
         explen += sizeof(clusterMsgDataPublish) -
                 8 +
@@ -3196,6 +3196,61 @@ int clusterProcessPacket(clusterLink *link) {
             pubsubPublishMessage(channel, message, type == CLUSTERMSG_TYPE_PUBLISHSHARD);
             decrRefCount(channel);
             decrRefCount(message);
+        }
+    } else if (type == CLUSTERMSG_TYPE_MPUBLISH) {
+        if (!sender) return 1;  /* We don't know that node. */
+
+        const uint8_t *src, *end;
+        robj *channel, *message;
+        uint32_t channel_len, message_len, len;
+        unsigned i, msg_count;
+
+        /* Don't bother creating useless objects if there are no
+         * Pub/Sub subscribers. */
+        if ((type == CLUSTERMSG_TYPE_MPUBLISH
+            && serverPubsubSubscriptionCount() > 0)) {
+            channel_len = ntohl(hdr->data.publish.msg.channel_len);
+            message_len = ntohl(hdr->data.publish.msg.message_len);
+            /* Count messages */
+            src = hdr->data.publish.msg.bulk_data + channel_len;
+            end = src + message_len;
+            msg_count = 0;
+            while (src + 4 <= end) {
+                memcpy(&len, src, sizeof(len));
+                len = ntohl(len);
+                src += 4;
+                if (src + len > end) {
+                    serverLog(LL_WARNING,
+                        "Received %s packet with malformed messages",
+                        clusterGetMessageTypeString(type));
+                    return 1;
+                }
+                src += len;
+                msg_count++;
+            }
+            serverAssert(src <= end);
+            if (src != end) {
+                serverLog(LL_WARNING,
+                    "Received %s packet with malformed messages (short)",
+                    clusterGetMessageTypeString(type));
+                return 1;
+            }
+            channel = createStringObject(
+                        (char*)hdr->data.publish.msg.bulk_data,channel_len);
+            /* Parse them out */
+            src = hdr->data.publish.msg.bulk_data + channel_len;
+            for (i = 0; src < end; ++i) {
+                memcpy(&len, src, sizeof(len));
+                len = ntohl(len);
+                src += 4;
+                message = createStringObject((char *) src, len);
+                src += len;
+                pubsubPublishMessage(channel, message, 0);
+                decrRefCount(message);
+                zfree(message);
+            }
+            decrRefCount(channel);
+            serverAssert(msg_count == i);
         }
     } else if (type == CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST) {
         if (!sender) return 1;  /* We don't know that node. */
@@ -3799,6 +3854,51 @@ clusterMsgSendBlock *clusterCreatePublishMsgBlock(robj *channel, robj *message, 
     return msgblock;
 }
 
+clusterMsgSendBlock *clusterCreateMPublishMsgBlock(robj *channel, robj **message, int count, uint16_t type) {
+
+    uint32_t channel_len, message_len;
+    uint32_t len;
+    size_t messages_aggregated_len;
+    unsigned char *end;
+    int i;
+
+    channel = getDecodedObject(channel);
+    channel_len = sdslen(channel->ptr);
+    size_t msglen = sizeof(clusterMsg)-sizeof(union clusterMsgData);
+    
+    messages_aggregated_len = 0;
+    for (i = 0; i < count; i++) {
+        message[i] = getDecodedObject(message[i]);
+        message_len = sdslen(message[i]->ptr);
+        messages_aggregated_len += 4 + message_len;
+    }
+
+    msglen += sizeof(clusterMsgDataPublish) - 8 + messages_aggregated_len;
+    clusterMsgSendBlock *msgblock = createClusterMsgSendBlock(type, msglen);
+
+    clusterMsg *hdr = &msgblock->msg;
+    hdr->data.publish.msg.channel_len = htonl(channel_len);
+    hdr->data.publish.msg.message_len = htonl(messages_aggregated_len);
+    memcpy(hdr->data.publish.msg.bulk_data,channel->ptr,sdslen(channel->ptr));
+    end = hdr->data.publish.msg.bulk_data+channel_len;
+
+    for (i = 0; i < count; i++) {
+        message_len = sdslen(message[i]->ptr);
+        len = htonl(message_len);
+        memcpy(end, &len, sizeof(len));
+        end += sizeof(len);
+        memcpy(end,message[i]->ptr,message_len);
+        end += message_len;
+    }
+
+    decrRefCount(channel);
+    for (i = 0; i < count; i++) {
+        decrRefCount(message[i]);
+    }
+    
+    return msgblock;
+}
+
 /* Send a FAIL message to all the nodes we are able to contact.
  * The FAIL message is sent when we detect that a node is failing
  * (CLUSTER_NODE_PFAIL) and we also receive a gossip confirmation of this:
@@ -3891,22 +3991,28 @@ int clusterSendModuleMessageToTarget(const char *target, uint64_t module_id, uin
  * Otherwise:
  * Publish this message across the slot (primary/replica).
  * -------------------------------------------------------------------------- */
-void clusterPropagatePublish(robj *channel, robj *message, int sharded) {
+void clusterPropagatePublish(robj *channel, robj **message, int count, int sharded) {
     clusterMsgSendBlock *msgblock;
 
     if (!sharded) {
-        msgblock = clusterCreatePublishMsgBlock(channel, message, CLUSTERMSG_TYPE_PUBLISH);
+        if (count == 1) {
+            msgblock = clusterCreatePublishMsgBlock(channel, message[0], CLUSTERMSG_TYPE_PUBLISH);
+        }
+        else {
+            msgblock = clusterCreateMPublishMsgBlock(channel, message, count, CLUSTERMSG_TYPE_MPUBLISH);
+        }
         clusterBroadcastMessage(msgblock);
         clusterMsgSendBlockDecrRefCount(msgblock);
         return;
     }
 
+    serverAssert(count == 1);
     listIter li;
     listNode *ln;
     list *nodes_for_slot = clusterGetNodesInMyShard(server.cluster->myself);
     serverAssert(nodes_for_slot != NULL);
     listRewind(nodes_for_slot, &li);
-    msgblock = clusterCreatePublishMsgBlock(channel, message, CLUSTERMSG_TYPE_PUBLISHSHARD);
+    msgblock = clusterCreatePublishMsgBlock(channel, message[0], CLUSTERMSG_TYPE_PUBLISHSHARD);
     while((ln = listNext(&li))) {
         clusterNode *node = listNodeValue(ln);
         if (node->flags & (CLUSTER_NODE_MYSELF|CLUSTER_NODE_HANDSHAKE))
@@ -5560,6 +5666,7 @@ const char *clusterGetMessageTypeString(int type) {
     case CLUSTERMSG_TYPE_MEET: return "meet";
     case CLUSTERMSG_TYPE_FAIL: return "fail";
     case CLUSTERMSG_TYPE_PUBLISH: return "publish";
+    case CLUSTERMSG_TYPE_MPUBLISH: return "mpublish";
     case CLUSTERMSG_TYPE_PUBLISHSHARD: return "publishshard";
     case CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST: return "auth-req";
     case CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK: return "auth-ack";

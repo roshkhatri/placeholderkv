@@ -2164,6 +2164,7 @@ ChannelSpecs commands_with_channels[] = {
     {psubscribeCommand, CMD_CHANNEL_PATTERN | CMD_CHANNEL_SUBSCRIBE, 1, -1},
     {punsubscribeCommand, CMD_CHANNEL_PATTERN | CMD_CHANNEL_UNSUBSCRIBE, 1, -1},
     {publishCommand, CMD_CHANNEL_PUBLISH, 1, 1},
+    {mpublishCommand, CMD_CHANNEL_PUBLISH, 1, 1},
     {spublishCommand, CMD_CHANNEL_PUBLISH, 1, 1},
     {NULL,0} /* Terminator. */
 };
