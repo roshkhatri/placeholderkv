@@ -24,6 +24,12 @@ jobs:
             ec2-instance-type: t2.medium
             subnet-id: subnet-012a365f5a5cc5d31
             security-group-id: sg-0f3f4fd1fa7d216ce
+            pre-runner-script: |
+              sudo yum update -y && \
+              sudo yum install docker -y && \
+              sudo yum install git -y && \
+              sudo yum install libicu -y && \
+              sudo systemctl enable docker
   
   do-the-job:
     name: Do the job on the runner
